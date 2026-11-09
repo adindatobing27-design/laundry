@@ -223,7 +223,6 @@ with gr.Blocks(
                 ],
                 inputs=message_box,
                 examples_per_page=3,
-                elem_classes=["example-row"],
             )
 
     message_box.submit(submit_message, [message_box, chat_log], [chat_log, message_box])
