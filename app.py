@@ -45,7 +45,7 @@ def load_knowledge():
 
 def load_model():
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype="auto", device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype="auto", device_map="auto")
     if ADAPTER_DIR and Path(ADAPTER_DIR).exists():
         from peft import PeftModel
 
