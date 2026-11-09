@@ -28,6 +28,7 @@ drop policy if exists "Anyone can view active FAQs" on public.faqs;
 create policy "Anyone can view active FAQs"
     on public.faqs for select to anon, authenticated using (is_active = true);
 
+revoke all on table public.services, public.faqs from anon, authenticated, public;
 grant select on public.services, public.faqs to anon, authenticated;
 
 insert into public.faqs (question, answer) values
