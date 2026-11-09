@@ -1,5 +1,7 @@
 import json
 import os
+import secrets
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import gradio as gr
@@ -12,6 +14,25 @@ ROOT = Path(__file__).parent
 DATA_FILE = ROOT / "data" / "laundry_faq.jsonl"
 MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-0.5B-Instruct")
 ADAPTER_DIR = os.getenv("ADAPTER_DIR", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
+
+def make_client(key):
+    if not SUPABASE_URL or not key:
+        return None
+    try:
+        from supabase import create_client
+
+        return create_client(SUPABASE_URL, key)
+    except Exception as error:
+        print(f"Koneksi Supabase gagal ({type(error).__name__}).")
+        return None
+
+
+PUBLIC_DB = make_client(SUPABASE_KEY)
+ADMIN_DB = make_client(SUPABASE_SERVICE_ROLE_KEY)
 
 
 def load_local_faqs():
@@ -20,27 +41,21 @@ def load_local_faqs():
 
 
 def load_knowledge():
-    """Membaca FAQ/layanan publik Supabase; fallback ke FAQ lokal."""
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_KEY", "").strip()
-    if not url or not key:
-        return load_local_faqs(), []
-    try:
-        from supabase import create_client
-
-        client = create_client(url, key)
-        faqs = client.table("faqs").select("question, answer").eq("is_active", True).execute().data
-        services = (
-            client.table("services")
-            .select("name, description, price_per_kg, estimated_hours")
-            .eq("is_active", True)
-            .execute()
-            .data
-        )
-        return faqs or load_local_faqs(), services or []
-    except Exception as error:
-        print(f"Supabase belum dapat dibaca; memakai FAQ lokal ({type(error).__name__}).")
-        return load_local_faqs(), []
+    faqs, services = load_local_faqs(), []
+    if PUBLIC_DB:
+        try:
+            remote_faqs = PUBLIC_DB.table("faqs").select("question, answer").eq("is_active", True).execute().data
+            remote_services = (
+                PUBLIC_DB.table("services")
+                .select("name, description, price_per_kg, estimated_hours, unit_type")
+                .eq("is_active", True)
+                .execute().data
+            )
+            faqs = remote_faqs or faqs
+            services = remote_services or []
+        except Exception as error:
+            print(f"Supabase belum dapat dibaca; memakai FAQ lokal ({type(error).__name__}).")
+    return faqs, services
 
 
 def load_model():
@@ -62,20 +77,21 @@ tokenizer, model = load_model()
 
 def build_context():
     lines = [f"FAQ: {item['question']} Jawaban: {item['answer']}" for item in FAQS]
+    lines.append("Jam buka Laundry Halilintar: setiap hari, Senin sampai Minggu, pukul 07.00–20.00.")
     for item in SERVICES:
         price = item.get("price_per_kg")
-        price_text = f"Rp{price}/kg" if price is not None else "harga belum dicantumkan"
+        price_text = f"Rp{int(float(price)):,}/kg".replace(",", ".") if price is not None else "harga belum dicantumkan"
         hours = item.get("estimated_hours")
-        time_text = f"estimasi {hours} jam" if hours is not None else "estimasi belum dicantumkan"
-        lines.append(f"Layanan: {item['name']}. {item.get('description', '')} Harga: {price_text}. {time_text}.")
+        duration = f"estimasi {hours} jam" if hours is not None else "estimasi belum dicantumkan"
+        lines.append(f"Layanan: {item['name']}. {item.get('description', '')} Harga: {price_text}. {duration}.")
     return "\n".join(lines)
 
 
 def respond(message, history):
     system_text = (
-        "Kamu asisten laundry yang ramah. Jawab singkat dalam bahasa Indonesia dan gunakan hanya konteks ini. "
-        "Jika informasi tidak tersedia, katakan belum tahu dan sarankan menghubungi admin. Jangan mengarang "
-        "harga, jam buka, atau status pesanan.\n\nInformasi laundry:\n" + build_context()
+        "Kamu asisten informasi Laundry Halilintar. Jawab singkat, ramah, dalam bahasa Indonesia, "
+        "dan gunakan hanya informasi berikut. Jangan mengarang harga atau status pesanan. "
+        "Jika informasi tidak tersedia, sarankan menghubungi admin.\n\n" + build_context()
     )
     messages = [{"role": "system", "content": system_text}]
     for item in (history or [])[-6:]:
@@ -94,144 +110,210 @@ def respond(message, history):
         output = model.generate(
             **inputs, max_new_tokens=120, do_sample=False, pad_token_id=tokenizer.eos_token_id
         )
-    answer_tokens = output[0][inputs["input_ids"].shape[1]:]
-    return tokenizer.decode(answer_tokens, skip_special_tokens=True).strip()
+    answer = output[0][inputs["input_ids"].shape[1]:]
+    return tokenizer.decode(answer, skip_special_tokens=True).strip()
+
+
+def format_rupiah(value):
+    return "Rp" + f"{int(float(value or 0)):,}".replace(",", ".")
+
+
+def get_service_rows():
+    if ADMIN_DB:
+        try:
+            return ADMIN_DB.table("services").select("id,name,description,price_per_kg,estimated_hours,is_active").order("id").execute().data
+        except Exception:
+            pass
+    return SERVICES
+
+
+def service_choices():
+    return [f"{row['name']} — {format_rupiah(row.get('price_per_kg'))}/kg" for row in get_service_rows()]
+
+
+def get_dashboard():
+    if not ADMIN_DB:
+        return 0, 0, 0, format_rupiah(0), []
+    try:
+        rows = ADMIN_DB.table("orders").select("order_code,status,payment_status,total_price,received_at,customers(name),services(name)").order("created_at", desc=True).limit(1000).execute().data
+        active = [row for row in rows if row["status"] not in ("Selesai", "Dibatalkan")]
+        ready = [row for row in rows if row["status"] == "Siap Diambil"]
+        revenue = sum(float(row["total_price"]) for row in rows if row["payment_status"] == "Lunas" and row["status"] != "Dibatalkan")
+        table = [[
+            row.get("order_code"), (row.get("customers") or {}).get("name", ""),
+            (row.get("services") or {}).get("name", ""), row.get("status"),
+            row.get("payment_status"), format_rupiah(row.get("total_price")),
+        ] for row in rows[:50]]
+        return len(rows), len(active), len(ready), format_rupiah(revenue), table
+    except Exception as error:
+        print(f"Tidak dapat memuat data pesanan ({type(error).__name__}). Periksa tabel Supabase dan key admin.")
+        return 0, 0, 0, format_rupiah(0), []
+
+
+def create_order(name, phone, service_label, weight, payment_method, paid, notes):
+    if not ADMIN_DB:
+        return "Pengelolaan pesanan belum aktif. Tambahkan SUPABASE_SERVICE_ROLE_KEY ke file .env (jangan dikirim di chat), lalu mulai ulang aplikasi.", *get_dashboard()[:4], get_dashboard()[4], gr.update(choices=service_choices())
+    name, phone = (name or "").strip(), (phone or "").strip()
+    if not name or not phone:
+        return "Isi nama dan nomor WhatsApp pelanggan dulu.", *get_dashboard()[:4], get_dashboard()[4], gr.update(choices=service_choices())
+    try:
+        kg = float(weight)
+        if kg <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        snap = get_dashboard()
+        return "Berat harus berupa angka lebih dari 0 kg.", *snap[:4], snap[4], gr.update(choices=service_choices())
+    services = get_service_rows()
+    selected = next((row for row in services if service_label and service_label.startswith(row["name"] + " —")), None)
+    if not selected:
+        snap = get_dashboard()
+        return "Pilih layanan yang tersedia.", *snap[:4], snap[4], gr.update(choices=service_choices())
+    price = float(selected.get("price_per_kg") or 0)
+    total = round(kg * price)
+    try:
+        customer_result = ADMIN_DB.table("customers").select("id").eq("phone", phone).limit(1).execute().data
+        if customer_result:
+            customer_id = customer_result[0]["id"]
+            ADMIN_DB.table("customers").update({"name": name}).eq("id", customer_id).execute()
+        else:
+            customer_id = ADMIN_DB.table("customers").insert({"name": name, "phone": phone}).execute().data[0]["id"]
+        now = datetime.now().astimezone()
+        order_code = f"LH-{now:%y%m%d}-{secrets.token_hex(2).upper()}"
+        duration = int(selected.get("estimated_hours") or 72)
+        ADMIN_DB.table("orders").insert({
+            "order_code": order_code, "customer_id": customer_id, "service_id": selected["id"],
+            "weight_kg": kg, "price_per_kg": price, "total_price": total,
+            "status": "Diterima", "payment_method": payment_method if payment_method != "Belum dibayar" else None,
+            "payment_status": "Lunas" if paid == "Lunas" else "Belum Lunas",
+            "received_at": now.isoformat(), "estimated_ready_at": (now + timedelta(hours=duration)).isoformat(),
+            "notes": (notes or "").strip(),
+        }).execute()
+        snap = get_dashboard()
+        return f"Pesanan {order_code} berhasil dicatat. Total {format_rupiah(total)}.", *snap[:4], snap[4], gr.update(choices=service_choices(), value=None)
+    except Exception as error:
+        snap = get_dashboard()
+        return f"Pesanan belum tersimpan ({type(error).__name__}). Periksa koneksi Supabase dan struktur tabel.", *snap[:4], snap[4], gr.update(choices=service_choices())
+
+
+def update_order(order_code, status, payment_status, payment_method):
+    if not ADMIN_DB:
+        snap = get_dashboard()
+        return "Key admin belum diatur.", *snap
+    if not order_code:
+        snap = get_dashboard()
+        return "Pilih kode pesanan terlebih dahulu.", *snap
+    try:
+        values = {"status": status, "payment_status": payment_status, "updated_at": datetime.now().astimezone().isoformat()}
+        values["payment_method"] = payment_method if payment_method != "Belum dibayar" else None
+        ADMIN_DB.table("orders").update(values).eq("order_code", order_code).execute()
+        snap = get_dashboard()
+        return f"Pesanan {order_code} berhasil diperbarui.", *snap
+    except Exception as error:
+        snap = get_dashboard()
+        return f"Gagal memperbarui pesanan ({type(error).__name__}).", *snap
+
+
+def refresh_dashboard():
+    return get_dashboard()
+
+
+def ask_chat(message, history):
+    clean = (message or "").strip()
+    if not clean:
+        return history or [], ""
+    updated = list(history or [])
+    updated.extend([{"role": "user", "content": clean}, {"role": "assistant", "content": respond(clean, history or [])}])
+    return updated, ""
+
+
+def initial_chat():
+    return [{"role": "assistant", "content": "Halo! Aku Asisten Laundry Halilintar. Tanyakan harga, layanan, atau jam buka kami."}]
 
 
 CSS = """
-body, .gradio-container { background: #f4f7f5 !important; }
-.gradio-container { max-width: 1180px !important; margin: 0 auto !important; color: #18352b !important; }
-footer { display: none !important; }
-#topbar { align-items: center; padding: 14px 4px 18px; border-bottom: 1px solid #e3ebe6; margin-bottom: 28px; }
-#brand-mark { display: flex; align-items: center; gap: 12px; }
-.brand-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 15px; background: #dff3e8; font-size: 23px; }
-.brand-name { font-size: 17px; font-weight: 750; color: #174d3a; letter-spacing: -.3px; }
-.brand-caption { color: #72847b; font-size: 12px; margin-top: 2px; }
-.top-badge { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #dce9e1; background: white; color: #426253; border-radius: 999px; padding: 9px 14px; font-size: 12px; font-weight: 650; }
-.status-dot { width: 8px; height: 8px; background: #37a66f; border-radius: 50%; }
-#hero { padding: 28px 14px 18px 4px; }
-.eyebrow { display: inline-block; color: #28744f; background: #e4f4e9; border-radius: 999px; padding: 7px 12px; font-size: 12px; font-weight: 700; letter-spacing: .5px; }
-.hero-title { color: #183a2c; font-size: clamp(34px, 4vw, 49px); line-height: 1.08; letter-spacing: -1.8px; font-weight: 780; margin: 20px 0 14px; }
-.hero-title span { color: #319166; }
-.hero-copy { max-width: 460px; color: #65776e; font-size: 16px; line-height: 1.7; }
-#stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 26px 0 24px; }
-.stat-card { border: 1px solid #e1eae4; background: #fff; border-radius: 16px; padding: 15px; min-height: 82px; }
-.stat-value { color: #1c6548; font-size: 19px; font-weight: 750; }
-.stat-label { color: #7a8a82; font-size: 11px; margin-top: 5px; }
-#chat-card { background: #fff !important; border: 1px solid #e1eae4 !important; border-radius: 23px !important; box-shadow: 0 14px 40px rgba(22, 61, 43, .07) !important; padding: 22px !important; }
-#chat-heading { padding: 0 4px 12px; border-bottom: 1px solid #edf1ee; margin-bottom: 12px; }
-#chat-heading h3 { color: #204434; margin-bottom: 4px; }
-#chat-heading p { color: #7a8a82; font-size: 13px; margin-top: 0; }
-#chat-log { border: 0 !important; background: #fff !important; }
-#chat-log .message.user { background: #e5f5ec !important; border: 1px solid #d6eddf !important; color: #204434 !important; }
-#chat-log .message.bot { background: #f5f8f6 !important; border: 1px solid #edf1ee !important; color: #263b31 !important; }
-#message-row { align-items: center; gap: 8px; }
-#message-box textarea { border-radius: 14px !important; border-color: #dce7df !important; background: #fbfdfb !important; }
-#send-button { min-width: 96px; border-radius: 13px !important; background: #267a52 !important; }
-#send-button:hover { background: #1d6845 !important; }
-#clear-button { border-radius: 13px !important; }
-#examples-title { color: #718178; font-size: 12px; font-weight: 650; margin: 12px 0 5px; }
-.example-row button { border-radius: 12px !important; border-color: #e0e9e3 !important; background: #fbfdfb !important; color: #426253 !important; }
-@media (max-width: 700px) {
-  #topbar { padding-bottom: 12px; }
-  #hero { padding-left: 2px; }
-  .hero-title { font-size: 36px; }
-  #stats { gap: 6px; }
-  .stat-card { padding: 11px 8px; }
-  .stat-label { font-size: 10px; }
-  #chat-card { padding: 14px !important; }
-}
+body, .gradio-container { background:#f3f7f4 !important; }
+.gradio-container { max-width:1180px !important; margin:auto !important; color:#173b2d !important; }
+footer { display:none !important; }
+#header { padding:18px 8px; border-bottom:1px solid #dfe9e2; margin-bottom:16px; }
+#brand { font-weight:800; font-size:21px; color:#17563b; }
+#subbrand { color:#718278; font-size:13px; }
+.panel { background:white; border:1px solid #e1eae4; border-radius:18px; padding:18px; }
+.metric { font-size:27px; font-weight:800; color:#19734a; }
+.muted { color:#718278; }
+button.primary { background:#19734a !important; }
 """
 
-WELCOME = "Halo! Aku asisten informasi laundry. Tanyakan layanan, estimasi, atau cara perawatan pakaian. Kalau data belum tersedia, aku arahkan kamu ke admin."
-
-
-def submit_message(message, history):
-    clean_message = (message or "").strip()
-    if not clean_message:
-        return history or [], ""
-    answer_text = respond(clean_message, history or [])
-    updated_history = list(history or [])
-    updated_history.extend([
-        {"role": "user", "content": clean_message},
-        {"role": "assistant", "content": answer_text},
-    ])
-    return updated_history, ""
-
-
-with gr.Blocks(
-    title="Asisten Laundry",
-) as demo:
-    with gr.Row(elem_id="topbar"):
-        gr.HTML(
-            "<div id='brand-mark'><div class='brand-icon'>🫧</div>"
-            "<div><div class='brand-name'>Laundri</div>"
-            "<div class='brand-caption'>Asisten informasi laundry</div></div></div>"
-        )
-        gr.HTML("<div class='top-badge'><span class='status-dot'></span> SIAP MEMBANTU</div>")
-
-    with gr.Row(equal_height=False):
-        with gr.Column(scale=5, min_width=300):
-            gr.HTML(
-                "<section id='hero'><div class='eyebrow'>ASISTEN LAUNDRY BERBASIS AI</div>"
-                "<h1 class='hero-title'>Urus laundry,<br><span>lebih mudah.</span></h1>"
-                "<p class='hero-copy'>Tanya soal layanan, harga, atau perawatan pakaian. "
-                "Jawaban diambil dari informasi laundry yang tersedia.</p></section>"
-            )
-            model_label = "LoRA aktif" if ADAPTER_DIR and Path(ADAPTER_DIR).exists() else "Qwen dasar"
-            gr.HTML(
-                "<div id='stats'>"
-                f"<div class='stat-card'><div class='stat-value'>{len(FAQS)}</div><div class='stat-label'>FAQ tersedia</div></div>"
-                f"<div class='stat-card'><div class='stat-value'>{len(SERVICES)}</div><div class='stat-label'>Layanan terdaftar</div></div>"
-                f"<div class='stat-card'><div class='stat-value'>{model_label}</div><div class='stat-label'>Model bahasa</div></div>"
-                "</div>"
-            )
-            gr.Markdown(
-                "**Catatan:** untuk harga atau status pesanan yang belum tercantum, "
-                "silakan konfirmasi kepada admin."
-            )
-
-        with gr.Column(scale=7, min_width=360, elem_id="chat-card"):
-            gr.HTML(
-                "<div id='chat-heading'><h3>Obrolan</h3>"
-                "<p>Asisten akan membantu menjawab pertanyaanmu.</p></div>"
-            )
-            chat_log = gr.Chatbot(
-                value=[{"role": "assistant", "content": WELCOME}],
-                height=430,
-                show_label=False,
-                elem_id="chat-log",
-            )
-            with gr.Row(elem_id="message-row"):
-                message_box = gr.Textbox(
-                    placeholder="Tulis pertanyaan tentang laundry...",
-                    show_label=False,
-                    lines=1,
-                    max_lines=4,
-                    container=False,
-                    elem_id="message-box",
-                )
-                send_button = gr.Button("Kirim", variant="primary", elem_id="send-button")
+with gr.Blocks(title="Laundry Halilintar") as demo:
+    gr.HTML("<div id='header'><div id='brand'>🫧 Laundry Halilintar</div><div id='subbrand'>Sistem informasi pesanan & asisten AI • Buka setiap hari, 07.00–20.00</div></div>")
+    with gr.Tabs():
+        with gr.Tab("Ringkasan"):
+            gr.Markdown("### Ringkasan operasional\nLihat pesanan terbaru dan pantau status pengerjaan.")
             with gr.Row():
-                clear_button = gr.Button("Hapus obrolan", size="sm", elem_id="clear-button")
-            gr.Markdown("Contoh pertanyaan", elem_id="examples-title")
-            gr.Examples(
-                examples=[
-                    ["Apa saja layanan laundry?"],
-                    ["Berapa harga cuci kiloan?"],
-                    ["Bagaimana cara mengambil pesanan?"],
-                ],
-                inputs=message_box,
-                examples_per_page=3,
-            )
+                total_card = gr.Number(label="Total pesanan", value=0, interactive=False)
+                active_card = gr.Number(label="Sedang berjalan", value=0, interactive=False)
+                ready_card = gr.Number(label="Siap diambil", value=0, interactive=False)
+                revenue_card = gr.Textbox(label="Total pembayaran lunas", value="Rp0", interactive=False)
+            refresh_button = gr.Button("Muat ulang ringkasan")
+            orders_table = gr.Dataframe(headers=["Kode", "Pelanggan", "Layanan", "Status", "Pembayaran", "Total"], interactive=False, wrap=True)
+            admin_note = gr.Markdown("Data pelanggan dan pesanan hanya dapat dibuka melalui koneksi admin lokal.")
+            refresh_button.click(refresh_dashboard, outputs=[total_card, active_card, ready_card, revenue_card, orders_table])
 
-    message_box.submit(submit_message, [message_box, chat_log], [chat_log, message_box])
-    send_button.click(submit_message, [message_box, chat_log], [chat_log, message_box])
-    clear_button.click(lambda: ([{"role": "assistant", "content": WELCOME}], ""), outputs=[chat_log, message_box])
+        with gr.Tab("Pesanan"):
+            gr.Markdown("### Catat pesanan baru\nKode pesanan dibuat otomatis. Harga disimpan sebagai snapshot saat transaksi dibuat.")
+            if not ADMIN_DB:
+                gr.Markdown("**Pengelolaan pesanan belum aktif.** Tambahkan `SUPABASE_SERVICE_ROLE_KEY` ke `.env` dari Supabase Dashboard → Project Settings → API Keys → Legacy API Keys → `service_role`, lalu mulai ulang aplikasi. Simpan key hanya di `.env` lokal; jangan kirim lewat chat atau unggah ke GitHub.")
+            with gr.Row():
+                with gr.Column():
+                    customer_name = gr.Textbox(label="Nama pelanggan")
+                    customer_phone = gr.Textbox(label="Nomor WhatsApp", placeholder="08xxxxxxxxxx")
+                    service_select = gr.Dropdown(choices=service_choices(), label="Layanan")
+                    weight_input = gr.Number(label="Berat (kg)", minimum=0.1, value=1, precision=2)
+                with gr.Column():
+                    payment_select = gr.Dropdown(["Belum dibayar", "Tunai", "QRIS", "Transfer Bank"], value="Belum dibayar", label="Metode pembayaran")
+                    paid_select = gr.Radio(["Belum Lunas", "Lunas"], value="Belum Lunas", label="Status pembayaran")
+                    notes_input = gr.Textbox(label="Catatan cucian", lines=3, placeholder="Contoh: pakaian putih dipisah")
+                    create_button = gr.Button("Simpan pesanan", variant="primary")
+            order_notice = gr.Markdown()
+            gr.Markdown("### Perbarui status pesanan")
+            with gr.Row():
+                update_code = gr.Textbox(label="Kode pesanan")
+                update_status_select = gr.Dropdown(["Diterima", "Diproses", "Siap Diambil", "Selesai", "Dibatalkan"], value="Diproses", label="Status pesanan")
+            with gr.Row():
+                update_paid_select = gr.Dropdown(["Belum Lunas", "Lunas"], value="Belum Lunas", label="Status pembayaran")
+                update_payment_select = gr.Dropdown(["Belum dibayar", "Tunai", "QRIS", "Transfer Bank"], value="Belum dibayar", label="Metode pembayaran")
+            update_button = gr.Button("Perbarui pesanan")
+            update_notice = gr.Markdown()
+
+        with gr.Tab("Layanan"):
+            gr.Markdown("### Daftar layanan demo\nHarga di bawah adalah harga awal yang bisa disesuaikan oleh pemilik usaha.")
+            service_table = gr.Dataframe(headers=["Layanan", "Deskripsi", "Harga/kg", "Estimasi (jam)"], interactive=False, value=[
+                [row.get("name"), row.get("description"), format_rupiah(row.get("price_per_kg")), row.get("estimated_hours")]
+                for row in get_service_rows()
+            ])
+
+        with gr.Tab("Asisten AI"):
+            gr.Markdown("### Asisten informasi Laundry Halilintar\nJawaban menggunakan Qwen dan informasi FAQ/layanan yang tersedia.")
+            chat = gr.Chatbot(value=initial_chat(), height=430, show_label=False)
+            with gr.Row():
+                chat_input = gr.Textbox(placeholder="Tanyakan harga, layanan, atau jam buka...", show_label=False, scale=8)
+                chat_send = gr.Button("Kirim", variant="primary", scale=1)
+            chat_clear = gr.Button("Hapus obrolan", size="sm")
+            chat_input.submit(ask_chat, [chat_input, chat], [chat, chat_input])
+            chat_send.click(ask_chat, [chat_input, chat], [chat, chat_input])
+            chat_clear.click(lambda: (initial_chat(), ""), outputs=[chat, chat_input])
+
+    create_button.click(
+        create_order,
+        [customer_name, customer_phone, service_select, weight_input, payment_select, paid_select, notes_input],
+        [order_notice, total_card, active_card, ready_card, revenue_card, orders_table, service_select],
+    )
+    update_button.click(
+        update_order,
+        [update_code, update_status_select, update_paid_select, update_payment_select],
+        [update_notice, total_card, active_card, ready_card, revenue_card, orders_table],
+    )
+    demo.load(refresh_dashboard, outputs=[total_card, active_card, ready_card, revenue_card, orders_table])
 
 if __name__ == "__main__":
-    demo.launch(
-        theme=gr.themes.Soft(primary_hue="green", secondary_hue="teal", neutral_hue="slate"),
-        css=CSS,
-    )
+    demo.launch(css=CSS)
 
