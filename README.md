@@ -1,83 +1,56 @@
-# Prototype AI Informasi Laundry
+# Sistem Informasi Laundry Halilintar
 
-Prototype ini memakai model Qwen pretrained, dataset FAQ laundry, adaptasi LoRA, Supabase untuk menyimpan informasi layanan/FAQ, dan Gradio untuk antarmuka chatbot.
+Prototype ini menggabungkan pencatatan pesanan laundry di Supabase dengan chatbot informasi berbasis Qwen. Aplikasi dijalankan lokal dari VS Code menggunakan Gradio.
 
-## Isi folder
+## Fitur
 
-- `app.py` — chatbot yang menjawab dari FAQ dan layanan Supabase.
-- `data/laundry_faq.jsonl` — dataset latihan buatan untuk demo. Ganti atau tambah dengan informasi laundry yang benar.
-- `data/evaluation_questions.jsonl` — pertanyaan uji yang tidak dipakai saat pelatihan.
-- `train_lora.py` — melatih adapter LoRA; loss hanya dihitung pada jawaban asisten.
-- `evaluate.py` — membuat perbandingan jawaban model dasar dan model LoRA dalam CSV.
-- `supabase/schema.sql` — tabel `services` dan `faqs`, kebijakan RLS, dan izin baca untuk chatbot.
+- Ringkasan total pesanan, pesanan aktif, siap diambil, dan nilai transaksi lunas.
+- Pencatatan pelanggan dan pesanan, nomor pesanan otomatis, catatan cucian, status pengerjaan, dan pembayaran.
+- Daftar layanan kiloan dan estimasi pengerjaan.
+- Chatbot FAQ menggunakan model pretrained Qwen; tidak membuat model dari awal.
+- Data pelanggan dan pesanan dilindungi RLS dan hanya diakses backend admin.
 
-## Mulai dari VS Code
+## Menjalankan aplikasi
 
-### 1. Siapkan Python
-
-Gunakan Python 3.11 atau lebih baru. Buka folder proyek ini di VS Code, lalu buka **Terminal → New Terminal**.
+Gunakan Python 3.13 dan virtual environment `.venv313` seperti yang sudah disiapkan di komputer pemilik proyek.
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+.\.venv313\Scripts\python.exe app.py
 ```
 
-Jika PowerShell menolak aktivasi environment, jalankan aplikasi dengan `.venv\Scripts\python.exe app.py` setelah library terpasang.
+Buka URL lokal yang tampil di terminal, biasanya `http://127.0.0.1:7860`. Pertama kali menjalankan aplikasi, Qwen perlu diunduh.
 
-### 2. Isi informasi laundry
+## Konfigurasi Supabase
 
-File `.env` lokal sudah disiapkan untuk koneksi ke Supabase. Jangan unggah file ini ke GitHub.
+Isi `.env` lokal (jangan unggah file ini ke GitHub):
 
-Di Supabase buka **Table Editor → services → Insert row**. Isi nama layanan, deskripsi, harga per kilogram, dan estimasi jam sesuai laundry yang sebenarnya. Tabel FAQ sudah memiliki empat contoh; edit atau tambah FAQ yang sesuai. Jangan gunakan harga contoh sebelum diperiksa.
-
-### 3. Jalankan chatbot model dasar
-
-```powershell
-python app.py
+```env
+SUPABASE_URL=alamat-project
+SUPABASE_KEY=publishable-atau-anon-key
+SUPABASE_SERVICE_ROLE_KEY=service-role-key-hanya-untuk-backend-lokal
+MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct
+ADAPTER_DIR=
 ```
 
-Buka URL lokal yang muncul di terminal (biasanya `http://127.0.0.1:7860`). Pertama kali jalan, Qwen diunduh sehingga perlu internet dan waktu tunggu. Tanpa adapter, aplikasi menggunakan model pretrained dasar.
+`SUPABASE_KEY` digunakan untuk membaca FAQ dan layanan publik. Agar dashboard, pencatatan, dan perubahan status pesanan berfungsi, isi `SUPABASE_SERVICE_ROLE_KEY` dari Supabase Dashboard → Project Settings → API Keys → Legacy API Keys → `service_role`. Simpan hanya di `.env` lokal. Jangan masukkan key tersebut ke kode, GitHub, chatbot, atau browser. Key admin dapat melewati RLS; prototype ini hanya dijalankan lokal dan tidak boleh dipublikasikan ke internet dengan key tersebut.
 
-## Adaptasi model dengan Google Colab
+## Database
 
-Gunakan Colab dengan runtime GPU untuk pelatihan. Di Colab jalankan sel berikut:
+`supabase/schema.sql` mendokumentasikan tabel `services`, `faqs`, `customers`, dan `orders`, aturan RLS, serta layanan dan FAQ demo. Skema awal sudah diterapkan pada project Supabase Laundry.
 
-```python
-!git clone https://github.com/adindatobing27-design/laundry.git
-%cd laundry
-!pip install -r requirements.txt
-!python train_lora.py
-```
+Harga demo saat ini:
 
-Setelah pelatihan, unduh adapter dari Colab:
+- Cuci + Setrika Reguler: Rp7.000/kg, estimasi 72 jam.
+- Cuci + Lipat: Rp6.000/kg, estimasi 48 jam.
+- Express Cuci + Setrika: Rp14.000/kg, estimasi 24 jam.
 
-```python
-from google.colab import files
-files.download("adapter-laundry.zip")
-```
+Harga dan estimasi adalah data demo yang dapat diubah setelah dibandingkan dengan harga usaha sebenarnya.
 
-Ekstrak ZIP ke folder proyek VS Code sehingga terdapat folder `adapter-laundry` berisi file adapter. Lalu ubah baris `ADAPTER_DIR=` di `.env` menjadi `ADAPTER_DIR=adapter-laundry`, kemudian jalankan ulang `python app.py`.
+## Adaptasi model untuk tugas AI
 
-## Bandingkan model sebelum dan sesudah LoRA
+Chatbot memakai model pretrained `Qwen/Qwen2.5-0.5B-Instruct` dan konteks FAQ/layanan Supabase. Tahap pertama menggunakan adaptasi konteks (RAG sederhana), bukan fine-tuning. FAQ bukan data transaksi. Data pesanan dan nomor pelanggan tidak dimasukkan ke dataset pelatihan.
 
-Jalankan dari root folder proyek di Colab setelah adapter selesai dibuat:
+Jika ingin menjalankan LoRA setelah dataset pertanyaan-jawaban ditambah dan ditinjau, gunakan `data/laundry_faq.jsonl`, `train_lora.py`, dan `evaluate.py`. Latih di Google Colab dengan GPU, simpan adapter ke `adapter-laundry`, lalu atur `ADAPTER_DIR=adapter-laundry` pada `.env`. Evaluasi pertanyaan terpisah sebelum menyimpulkan adapter lebih baik daripada model dasar.
 
-```python
-!python evaluate.py
-```
-
-Script menghasilkan `hasil_evaluasi.csv` dengan pertanyaan, jawaban acuan, jawaban model dasar, dan jawaban LoRA. Bandingkan secara manual: ketepatan informasi, kesesuaian jawaban, dan apakah model mengarang. Isi kolom `penilaian_manual`; jangan menyimpulkan LoRA lebih baik tanpa melihat hasil. Unduh hasilnya dengan:
-
-```python
-from google.colab import files
-files.download("hasil_evaluasi.csv")
-```
-
-Dataset contoh masih kecil dan bersifat sintetis. Tambahkan pertanyaan nyata dengan jawaban yang sudah diverifikasi sebelum menjadikannya bahan kesimpulan presentasi. Jangan masukkan data pribadi pelanggan ke dataset.
-
-## Batas prototype
-
-Prototype ini menjawab pertanyaan umum tentang layanan laundry. Belum membuat transaksi, menyimpan data pelanggan, atau membaca status pesanan. Harga dan status pesanan tidak boleh ditebak oleh chatbot; arahkan pelanggan ke admin jika data belum tersedia.
+Dataset sekarang kecil dan sintetis; jawaban layanan perlu diverifikasi sebelum demo publik atau dipakai sebagai informasi usaha nyata.
 
