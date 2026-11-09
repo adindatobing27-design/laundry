@@ -30,8 +30,13 @@ create table if not exists public.customers (
     id uuid primary key default gen_random_uuid(),
     name text not null check (length(trim(name)) between 1 and 120),
     phone text not null check (length(trim(phone)) between 8 and 24),
+    auth_user_id uuid unique,
+    email text,
     created_at timestamptz not null default now()
 );
+
+alter table public.customers add column if not exists auth_user_id uuid unique;
+alter table public.customers add column if not exists email text;
 
 create table if not exists public.orders (
     id uuid primary key default gen_random_uuid(),
