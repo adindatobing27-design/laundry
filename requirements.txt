@@ -1,0 +1,9 @@
+torch
+transformers
+peft
+datasets
+accelerate
+gradio
+supabase
+python-dotenv
+
