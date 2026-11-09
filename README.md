@@ -4,6 +4,8 @@ Prototype ini menggabungkan pencatatan pesanan laundry di Supabase dengan chatbo
 
 ## Fitur
 
+- **Pembeli:** lihat katalog dan estimasi, buat pesanan, cek status memakai kode pesanan + nomor WhatsApp, dan tanya chatbot.
+- **Admin:** login PIN, lihat ringkasan, catat pesanan di kasir, dan perbarui status/pembayaran.
 - Ringkasan total pesanan, pesanan aktif, siap diambil, dan nilai transaksi lunas.
 - Pencatatan pelanggan dan pesanan, nomor pesanan otomatis, catatan cucian, status pengerjaan, dan pembayaran.
 - Daftar layanan kiloan dan estimasi pengerjaan.
@@ -28,11 +30,12 @@ Isi `.env` lokal (jangan unggah file ini ke GitHub):
 SUPABASE_URL=alamat-project
 SUPABASE_KEY=publishable-atau-anon-key
 SUPABASE_SERVICE_ROLE_KEY=service-role-key-hanya-untuk-backend-lokal
+ADMIN_PIN=buat-pin-admin-sendiri
 MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct
 ADAPTER_DIR=
 ```
 
-`SUPABASE_KEY` digunakan untuk membaca FAQ dan layanan publik. Agar dashboard, pencatatan, dan perubahan status pesanan berfungsi, isi `SUPABASE_SERVICE_ROLE_KEY` dari Supabase Dashboard → Project Settings → API Keys → Legacy API Keys → `service_role`. Simpan hanya di `.env` lokal. Jangan masukkan key tersebut ke kode, GitHub, chatbot, atau browser. Key admin dapat melewati RLS; prototype ini hanya dijalankan lokal dan tidak boleh dipublikasikan ke internet dengan key tersebut.
+`SUPABASE_KEY` digunakan untuk membaca FAQ dan layanan publik. Agar pesanan pembeli, dashboard admin, dan perubahan status berfungsi, isi `SUPABASE_SERVICE_ROLE_KEY` dari Supabase Dashboard → Project Settings → API Keys → Legacy API Keys → `service_role`. Atur `ADMIN_PIN` dengan PIN pilihan sendiri. Simpan keduanya hanya di `.env` lokal. Jangan masukkan key tersebut ke kode, GitHub, chatbot, atau browser. Key admin dapat melewati RLS; prototype ini hanya dijalankan lokal dan tidak boleh dipublikasikan ke internet dengan key tersebut. Untuk aplikasi yang dihosting publik, ganti login PIN lokal dengan Supabase Auth dan kebijakan admin yang sesuai.
 
 ## Database
 
