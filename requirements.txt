@@ -1,9 +1,9 @@
-torch
-transformers
-peft
-datasets
-accelerate
-gradio
-supabase
-python-dotenv
+torch==2.15.0
+transformers==5.22.2
+peft==0.21.2
+datasets==5.1.0
+accelerate==1.15.0
+gradio==6.31.0
+supabase==2.34.1
+python-dotenv==1.2.4
 
