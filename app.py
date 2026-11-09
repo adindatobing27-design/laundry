@@ -133,7 +133,7 @@ def service_choices():
 
 def get_dashboard():
     if not ADMIN_DB:
-        return 0, 0, 0, format_rupiah(0), []
+        return 0, 0, 0, format_rupiah(0), [["—", "Key admin belum diatur", "—", "—", "—", "—"]]
     try:
         rows = ADMIN_DB.table("orders").select("order_code,status,payment_status,total_price,received_at,customers(name),services(name)").order("created_at", desc=True).limit(1000).execute().data
         active = [row for row in rows if row["status"] not in ("Selesai", "Dibatalkan")]
@@ -144,10 +144,12 @@ def get_dashboard():
             (row.get("services") or {}).get("name", ""), row.get("status"),
             row.get("payment_status"), format_rupiah(row.get("total_price")),
         ] for row in rows[:50]]
+        if not table:
+            table = [["—", "Belum ada pesanan", "Tambahkan pesanan di tab Pesanan", "—", "—", "—"]]
         return len(rows), len(active), len(ready), format_rupiah(revenue), table
     except Exception as error:
         print(f"Tidak dapat memuat data pesanan ({type(error).__name__}). Periksa tabel Supabase dan key admin.")
-        return 0, 0, 0, format_rupiah(0), []
+        return 0, 0, 0, format_rupiah(0), [["—", "Data belum dapat dimuat", "Periksa konfigurasi Supabase", "—", "—", "—"]]
 
 
 def create_order(name, phone, service_label, weight, payment_method, paid, notes):
@@ -231,31 +233,63 @@ def initial_chat():
 
 
 CSS = """
-body, .gradio-container { background:#f3f7f4 !important; }
-.gradio-container { max-width:1180px !important; margin:auto !important; color:#173b2d !important; }
+html, body, #root, gradio-app, .gradio-container { background:#f4f7f4 !important; color-scheme:light !important; }
+body { margin:0 !important; }
+.gradio-container { width:100% !important; max-width:none !important; margin:0 auto !important; padding:12px clamp(18px, 4vw, 64px) 48px !important; box-sizing:border-box !important; color:#19382c !important; }
+main { width:100% !important; max-width:1420px !important; margin:0 auto !important; }
 footer { display:none !important; }
-#header { padding:18px 8px; border-bottom:1px solid #dfe9e2; margin-bottom:16px; }
-#brand { font-weight:800; font-size:21px; color:#17563b; }
-#subbrand { color:#718278; font-size:13px; }
-.panel { background:white; border:1px solid #e1eae4; border-radius:18px; padding:18px; }
-.metric { font-size:27px; font-weight:800; color:#19734a; }
-.muted { color:#718278; }
-button.primary { background:#19734a !important; }
+#header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:19px 24px; background:#fff; border:1px solid #e4ebe6; border-radius:20px; margin:4px 0 22px; box-shadow:0 8px 28px rgba(28,62,44,.055); }
+#brand-wrap { display:flex; align-items:center; gap:13px; }
+#brand-mark { width:46px; height:46px; display:grid; place-items:center; background:#e5f3e9; color:#247047; border-radius:15px; font-size:22px; }
+#brand { font-weight:800; font-size:20px; line-height:1.2; color:#17563b; }
+#subbrand { color:#718278; font-size:12px; margin-top:4px; }
+#header-meta { display:flex; align-items:center; gap:8px; color:#52685b; font-size:12px; }
+.open-chip { padding:9px 13px; border:1px solid #dce9df; background:#f8fcf9; border-radius:999px; white-space:nowrap; }
+.page-intro { margin:8px 2px 16px; }
+.page-intro h2 { font-size:24px; color:#193e2e; margin:0 0 5px; }
+.page-intro p { color:#718278; margin:0; }
+button[role="tab"] { border-radius:12px 12px 0 0 !important; padding:12px 18px !important; font-weight:650 !important; color:#60756a !important; }
+button[role="tab"][aria-selected="true"] { color:#17683f !important; border-bottom:3px solid #278653 !important; background:#fff !important; }
+[data-testid="tabitem"] { padding-top:19px !important; }
+#metric-total, #metric-active, #metric-ready, #metric-revenue { background:#fff !important; border:1px solid #e1eae4 !important; border-radius:17px !important; padding:14px 16px !important; box-shadow:0 5px 18px rgba(28,62,44,.045) !important; }
+#metric-total label, #metric-active label, #metric-ready label, #metric-revenue label { color:#718278 !important; font-size:12px !important; font-weight:600 !important; }
+#metric-total input, #metric-active input, #metric-ready input, #metric-revenue input { color:#17683f !important; background:#fff !important; border:0 !important; font-size:26px !important; font-weight:800 !important; padding-left:0 !important; }
+#load-summary, #create-order, #update-order { border-radius:12px !important; min-height:44px; font-weight:700 !important; }
+button.primary { background:#19734a !important; color:white !important; border-color:#19734a !important; }
+button.primary:hover { background:#145c3b !important; }
+#recent-orders { overflow:hidden; background:#fff !important; border:1px solid #e1eae4 !important; border-radius:16px !important; }
+table, [data-testid="table"] { background:#fff !important; color:#244034 !important; }
+thead, th { background:#edf4ef !important; color:#355846 !important; font-weight:700 !important; }
+td, th { border-color:#e5ece7 !important; padding:12px 14px !important; }
+input, textarea, select { background:#fff !important; color:#20392e !important; border-color:#dce7df !important; border-radius:11px !important; }
+.block, [data-testid="block"] { border-color:#e4ebe6 !important; }
+.prose, .markdown { color:#42594c !important; }
+#setup-notice { padding:12px 16px; background:#fff7e8; color:#765615; border:1px solid #f0dfb8; border-radius:13px; }
+@media (max-width:760px) {
+ .gradio-container { padding:8px 12px 28px !important; }
+ #header { padding:15px; border-radius:16px; }
+ #header-meta { display:none; }
+ .page-intro h2 { font-size:21px; }
+ button[role="tab"] { padding:10px 11px !important; font-size:12px !important; }
+ #metric-total, #metric-active, #metric-ready, #metric-revenue { padding:10px !important; }
+}
 """
 
 with gr.Blocks(title="Laundry Halilintar") as demo:
-    gr.HTML("<div id='header'><div id='brand'>🫧 Laundry Halilintar</div><div id='subbrand'>Sistem informasi pesanan & asisten AI • Buka setiap hari, 07.00–20.00</div></div>")
+    gr.HTML("<div id='header'><div id='brand-wrap'><div id='brand-mark'>✦</div><div><div id='brand'>Laundry Halilintar</div><div id='subbrand'>Sistem informasi operasional laundry</div></div></div><div id='header-meta'><span class='open-chip'>● Buka setiap hari</span><span class='open-chip'>07.00—20.00</span></div></div>")
     with gr.Tabs():
         with gr.Tab("Ringkasan"):
-            gr.Markdown("### Ringkasan operasional\nLihat pesanan terbaru dan pantau status pengerjaan.")
-            with gr.Row():
-                total_card = gr.Number(label="Total pesanan", value=0, interactive=False)
-                active_card = gr.Number(label="Sedang berjalan", value=0, interactive=False)
-                ready_card = gr.Number(label="Siap diambil", value=0, interactive=False)
-                revenue_card = gr.Textbox(label="Total pembayaran lunas", value="Rp0", interactive=False)
-            refresh_button = gr.Button("Muat ulang ringkasan")
-            orders_table = gr.Dataframe(headers=["Kode", "Pelanggan", "Layanan", "Status", "Pembayaran", "Total"], interactive=False, wrap=True)
-            admin_note = gr.Markdown("Data pelanggan dan pesanan hanya dapat dibuka melalui koneksi admin lokal.")
+            gr.Markdown("<div class='page-intro'><h2>Ringkasan operasional</h2><p>Pantau pesanan hari ini dan progres cucian pelanggan.</p></div>")
+            if not ADMIN_DB:
+                gr.Markdown("<div id='setup-notice'>Data ringkasan masih kosong karena key admin Supabase belum diisi di file .env lokal.</div>")
+            with gr.Row(equal_height=True):
+                total_card = gr.Number(label="Total pesanan", value=0, interactive=False, elem_id="metric-total")
+                active_card = gr.Number(label="Sedang berjalan", value=0, interactive=False, elem_id="metric-active")
+                ready_card = gr.Number(label="Siap diambil", value=0, interactive=False, elem_id="metric-ready")
+                revenue_card = gr.Textbox(label="Pembayaran lunas", value="Rp0", interactive=False, elem_id="metric-revenue")
+            refresh_button = gr.Button("↻  Muat ulang ringkasan", elem_id="load-summary")
+            gr.Markdown("### Pesanan terbaru")
+            orders_table = gr.Dataframe(headers=["Kode", "Pelanggan", "Layanan", "Status", "Pembayaran", "Total"], interactive=False, wrap=True, elem_id="recent-orders")
             refresh_button.click(refresh_dashboard, outputs=[total_card, active_card, ready_card, revenue_card, orders_table])
 
         with gr.Tab("Pesanan"):
@@ -272,7 +306,7 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
                     payment_select = gr.Dropdown(["Belum dibayar", "Tunai", "QRIS", "Transfer Bank"], value="Belum dibayar", label="Metode pembayaran")
                     paid_select = gr.Radio(["Belum Lunas", "Lunas"], value="Belum Lunas", label="Status pembayaran")
                     notes_input = gr.Textbox(label="Catatan cucian", lines=3, placeholder="Contoh: pakaian putih dipisah")
-                    create_button = gr.Button("Simpan pesanan", variant="primary")
+                    create_button = gr.Button("Simpan pesanan", variant="primary", elem_id="create-order")
             order_notice = gr.Markdown()
             gr.Markdown("### Perbarui status pesanan")
             with gr.Row():
@@ -281,7 +315,7 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
             with gr.Row():
                 update_paid_select = gr.Dropdown(["Belum Lunas", "Lunas"], value="Belum Lunas", label="Status pembayaran")
                 update_payment_select = gr.Dropdown(["Belum dibayar", "Tunai", "QRIS", "Transfer Bank"], value="Belum dibayar", label="Metode pembayaran")
-            update_button = gr.Button("Perbarui pesanan")
+            update_button = gr.Button("Perbarui pesanan", elem_id="update-order")
             update_notice = gr.Markdown()
 
         with gr.Tab("Layanan"):
@@ -315,5 +349,5 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
     demo.load(refresh_dashboard, outputs=[total_card, active_card, ready_card, revenue_card, orders_table])
 
 if __name__ == "__main__":
-    demo.launch(css=CSS)
+    demo.launch(theme=gr.themes.Soft(primary_hue="green", secondary_hue="emerald", neutral_hue="slate"), css=CSS)
 
