@@ -17,8 +17,21 @@ MODEL_ID = os.getenv("MODEL_ID", "Qwen/Qwen2.5-0.5B-Instruct")
 ADAPTER_DIR = os.getenv("ADAPTER_DIR", "").strip()
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "").strip()
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
-ADMIN_PIN = os.getenv("ADMIN_PIN", "").strip()
+ADMIN_SUPABASE_KEY = SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "").strip().lower()
+
+if ADMIN_SUPABASE_KEY.startswith("sb_publishable_"):
+    ADMIN_DB_CONFIG_ERROR = (
+        "Key di SUPABASE_SERVICE_ROLE_KEY adalah publishable key. Isi SUPABASE_SECRET_KEY "
+        "dengan Secret key (awalan sb_secret_) dari Supabase Dashboard → Project Settings → API Keys."
+    )
+    ADMIN_SUPABASE_KEY = ""
+elif not ADMIN_SUPABASE_KEY:
+    ADMIN_DB_CONFIG_ERROR = "Secret key Supabase belum diisi pada SUPABASE_SECRET_KEY di file .env lokal."
+else:
+    ADMIN_DB_CONFIG_ERROR = ""
 
 
 def make_client(key):
@@ -34,7 +47,7 @@ def make_client(key):
 
 
 PUBLIC_DB = make_client(SUPABASE_KEY)
-ADMIN_DB = make_client(SUPABASE_SERVICE_ROLE_KEY)
+ADMIN_DB = make_client(ADMIN_SUPABASE_KEY)
 
 
 def load_local_faqs():
@@ -154,9 +167,9 @@ def get_dashboard():
         return 0, 0, 0, format_rupiah(0), [["—", "Data belum dapat dimuat", "Periksa konfigurasi Supabase", "—", "—", "—"]]
 
 
-def create_order_record(name, phone, service_label, weight, payment_method, paid, notes=""):
+def create_order_record(name, phone, service_label, weight, payment_method, paid, notes="", buyer=None):
     if not ADMIN_DB:
-        return None, None, "Sambungan admin Supabase belum disiapkan."
+        return None, None, ADMIN_DB_CONFIG_ERROR or "Sambungan admin Supabase belum disiapkan."
     name, phone = (name or "").strip(), (phone or "").strip()
     if not name or not phone:
         return None, None, "Isi nama dan nomor WhatsApp pelanggan dulu."
@@ -173,12 +186,21 @@ def create_order_record(name, phone, service_label, weight, payment_method, paid
     price = float(selected.get("price_per_kg") or 0)
     total = round(kg * price)
     try:
-        customer_result = ADMIN_DB.table("customers").select("id").eq("phone", phone).limit(1).execute().data
+        if buyer:
+            customer_result = ADMIN_DB.table("customers").select("id").eq("auth_user_id", buyer["id"]).limit(1).execute().data
+        else:
+            customer_result = ADMIN_DB.table("customers").select("id").eq("phone", phone).limit(1).execute().data
         if customer_result:
             customer_id = customer_result[0]["id"]
-            ADMIN_DB.table("customers").update({"name": name}).eq("id", customer_id).execute()
+            customer_values = {"name": name}
+            if buyer:
+                customer_values.update({"phone": phone, "email": buyer.get("email"), "auth_user_id": buyer["id"]})
+            ADMIN_DB.table("customers").update(customer_values).eq("id", customer_id).execute()
         else:
-            customer_id = ADMIN_DB.table("customers").insert({"name": name, "phone": phone}).execute().data[0]["id"]
+            customer_values = {"name": name, "phone": phone}
+            if buyer:
+                customer_values.update({"email": buyer.get("email"), "auth_user_id": buyer["id"]})
+            customer_id = ADMIN_DB.table("customers").insert(customer_values).execute().data[0]["id"]
         now = datetime.now().astimezone()
         order_code = f"LH-{now:%y%m%d}-{secrets.token_hex(4).upper()}"
         duration = int(selected.get("estimated_hours") or 72)
@@ -192,7 +214,11 @@ def create_order_record(name, phone, service_label, weight, payment_method, paid
         }).execute()
         return order_code, total, None
     except Exception as error:
-        return None, None, f"Pesanan belum tersimpan ({type(error).__name__}). Periksa koneksi Supabase dan struktur tabel."
+        code = getattr(error, "code", None)
+        message = getattr(error, "message", None) or str(error)
+        detail = f" [{code}]" if code else ""
+        message = " ".join(str(message).split())[:240]
+        return None, None, f"Pesanan belum tersimpan{detail}: {message}"
 
 
 def create_order(name, phone, service_label, weight, payment_method, paid, notes, is_admin):
@@ -206,8 +232,34 @@ def create_order(name, phone, service_label, weight, payment_method, paid, notes
     return f"Pesanan {code} berhasil dicatat. Total {format_rupiah(total)}.", *snap[:4], snap[4], gr.update(choices=service_choices(), value=None)
 
 
-def create_buyer_order(name, phone, service_label, weight, payment_method, notes):
-    code, total, error = create_order_record(name, phone, service_label, weight, payment_method, "Belum Lunas", notes)
+def complete_buyer_login(access_token):
+    if not access_token:
+        return None, "Kamu belum login. Masuk dengan Google untuk membuat pesanan."
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None, "Konfigurasi Supabase publik belum lengkap di file .env."
+    try:
+        from supabase import create_client
+
+        auth_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        response = auth_client.auth.get_user(access_token)
+        user = response.user
+        email = (getattr(user, "email", "") or "").strip()
+        metadata = getattr(user, "user_metadata", {}) or {}
+        name = str(metadata.get("full_name") or metadata.get("name") or (email.split("@")[0] if email else "Pembeli"))
+        return {"id": str(user.id), "email": email, "name": str(name), "access_token": access_token}, f"Login sebagai **{html.escape(name)}** ({html.escape(email)})."
+    except Exception:
+        return None, "Login Google belum berhasil divalidasi. Coba masuk kembali."
+
+
+def create_buyer_order(name, phone, service_label, weight, payment_method, notes, buyer_session):
+    if not buyer_session:
+        return "Silakan login dengan Google terlebih dahulu sebelum membuat pesanan."
+    validated_session, session_message = complete_buyer_login(buyer_session.get("access_token"))
+    if not validated_session or validated_session.get("id") != buyer_session.get("id"):
+        return "Sesi login berakhir. Silakan login Google kembali."
+    buyer = {"id": validated_session["id"], "email": validated_session["email"]}
+    name = (name or "").strip() or validated_session["name"]
+    code, total, error = create_order_record(name, phone, service_label, weight, payment_method, "Belum Lunas", notes, buyer=buyer)
     if error:
         return error
     return f"Pesanan berhasil dikirim! Simpan kode **{code}** untuk mengecek status. Perkiraan total {format_rupiah(total)}. Pembayaran dapat diselesaikan saat proses pesanan."
@@ -215,7 +267,7 @@ def create_buyer_order(name, phone, service_label, weight, payment_method, notes
 
 def track_buyer_order(order_code, phone):
     if not ADMIN_DB:
-        return "Pelacakan belum siap. Koneksi admin Supabase perlu diatur terlebih dahulu."
+        return f"Pelacakan belum siap. {ADMIN_DB_CONFIG_ERROR or 'Koneksi admin Supabase perlu diatur terlebih dahulu.'}"
     code, phone = (order_code or "").strip().upper(), (phone or "").strip()
     if not code or not phone:
         return "Masukkan kode pesanan dan nomor WhatsApp yang digunakan saat memesan."
@@ -252,13 +304,26 @@ def update_order(order_code, status, payment_status, payment_method, is_admin):
         return f"Gagal memperbarui pesanan ({type(error).__name__}).", *snap
 
 
-def login_admin(pin):
+def login_admin(email, password):
     if not ADMIN_DB:
-        return "Koneksi admin Supabase belum siap. Isi service role key di .env lokal.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
-    if not ADMIN_PIN:
-        return "PIN admin belum diatur. Isi ADMIN_PIN di .env lokal lalu mulai ulang aplikasi.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
-    if not secrets.compare_digest(str(pin or ""), ADMIN_PIN):
-        return "PIN salah. Coba lagi.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+        return ADMIN_DB_CONFIG_ERROR or "Koneksi admin Supabase belum siap. Isi SUPABASE_SECRET_KEY di .env lokal.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+    if not ADMIN_EMAIL:
+        return "Email admin belum diatur pada ADMIN_EMAIL di file .env lokal.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+    email = (email or "").strip().lower()
+    if not email or not password:
+        return "Masukkan email dan password akun admin Supabase.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+    if not secrets.compare_digest(email, ADMIN_EMAIL):
+        return "Akun ini tidak terdaftar sebagai admin.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+    try:
+        from supabase import create_client
+
+        auth_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        response = auth_client.auth.sign_in_with_password({"email": email, "password": password})
+        authenticated_email = (getattr(response.user, "email", "") or "").strip().lower()
+        if not authenticated_email or not secrets.compare_digest(authenticated_email, ADMIN_EMAIL):
+            return "Login ditolak: akun Supabase ini bukan email admin yang diizinkan.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
+    except Exception:
+        return "Login gagal. Periksa email/password akun Supabase dan pastikan emailnya sudah dikonfirmasi.", False, gr.update(visible=True), gr.update(visible=False), 0, 0, 0, format_rupiah(0), []
     return "Login berhasil.", True, gr.update(visible=False), gr.update(visible=True), *get_dashboard()
 
 
@@ -281,6 +346,49 @@ def ask_chat(message, history):
 
 def initial_chat():
     return [{"role": "assistant", "content": "Halo! Aku Asisten Laundry Halilintar. Tanyakan harga, layanan, atau jam buka kami."}]
+
+
+GOOGLE_AUTH_JS = f"""() => {{
+  const supabaseUrl = {json.dumps(SUPABASE_URL)};
+  const publishableKey = {json.dumps(SUPABASE_KEY)};
+  window.__laundryAuthReady = new Promise((resolve) => {{
+    const initialize = () => {{
+      window.__laundrySupabase = window.supabase.createClient(supabaseUrl, publishableKey, {{
+        auth: {{ flowType: 'implicit', detectSessionInUrl: true, persistSession: true }}
+      }});
+      resolve(window.__laundrySupabase);
+      window.__laundrySupabase.auth.getSession().then(({{data}}) => {{
+        const token = data.session?.access_token || '';
+        const sync = () => {{
+          const box = document.querySelector('#buyer-auth-token textarea');
+          const button = document.querySelector('#buyer-auth-sync button');
+          if (!box || !button) return false;
+          const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+          setter.call(box, token);
+          box.dispatchEvent(new Event('input', {{bubbles:true}}));
+          box.dispatchEvent(new Event('change', {{bubbles:true}}));
+          button.click();
+          return true;
+        }};
+        let attempts = 0;
+        const timer = setInterval(() => {{
+          attempts += 1;
+          if (sync() || attempts > 40) clearInterval(timer);
+        }}, 250);
+        if (window.location.hash.includes('access_token') || window.location.hash.includes('error'))
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+      }});
+    }};
+    if (window.supabase?.createClient) initialize();
+    else {{
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+      script.onload = initialize;
+      script.onerror = () => resolve(null);
+      document.head.appendChild(script);
+    }}
+  }});
+}}"""
 
 
 
@@ -423,10 +531,18 @@ input,textarea,select { background:white !important;color:#203650 !important;bor
 }
 """
 
-with gr.Blocks(title="Laundry Halilintar") as demo:
+with gr.Blocks(title="Laundry Halilintar", js=GOOGLE_AUTH_JS) as demo:
     gr.HTML("<div id='brandbar'><div id='brand-lock'><div id='brand-mark'>✦</div><div><div id='brand-name'>LAUNDRY HALILINTAR</div><div id='brand-caption'>Perawatan pakaian yang lebih mudah</div></div></div><div id='brand-hours'>Senin—Minggu &nbsp;·&nbsp; 07.00—20.00</div></div>")
     with gr.Tabs():
         with gr.Tab("Untuk Pembeli"):
+            buyer_session = gr.State(None)
+            gr.HTML("<section class='section soft'><div class='section-heading'><div class='section-eyebrow'>AKUN PEMBELI</div><h2>Masuk untuk memesan</h2><p>Gunakan akun Google. Akun baru akan otomatis terdaftar saat pertama kali masuk.</p></div></section>")
+            with gr.Row():
+                buyer_google_button = gr.Button("Lanjutkan dengan Google", variant="primary", elem_id="buyer-google-login", interactive=bool(SUPABASE_URL and SUPABASE_KEY))
+                buyer_logout_button = gr.Button("Keluar", elem_id="buyer-google-logout")
+            buyer_auth_status = gr.Markdown("Belum login. Masuk dengan Google sebelum mengirim pesanan.")
+            buyer_auth_token = gr.Textbox(visible=False, elem_id="buyer-auth-token")
+            buyer_auth_sync = gr.Button("Validasi sesi", visible=False, elem_id="buyer-auth-sync")
             gr.HTML("<nav id='public-nav'><a class='nav-logo' href='#top'>HALILINTAR</a><div class='nav-links'><a href='#buyer-services'>LAYANAN</a><a href='#buyer-process'>CARA KERJA</a><a href='#buyer-track'>CEK PESANAN</a><a class='nav-cta' href='#buyer-order'>PESAN SEKARANG</a></div></nav>")
             gr.HTML("<section id='top'><div id='hero'><div class='hero-copy'><div class='hero-kicker'>LAUNDRY CARE, MADE SIMPLE</div><h1 class='hero-title'>Pakaian bersih,<br><span>hari lebih ringan.</span></h1><p class='hero-description'>Titipkan cucianmu kepada Laundry Halilintar. Kami bantu pakaian kembali bersih, rapi, dan siap menemani aktivitasmu.</p><div class='hero-actions'><a class='hero-button' href='#buyer-order'>Pesan laundry &nbsp;→</a><a class='hero-secondary' href='#buyer-services'>Lihat layanan</a></div></div>" + MACHINE_ART + "</div></section><div id='feature-strip'><div class='feature-card'><div class='feature-icon'>✧</div><div><strong>Penanganan teliti</strong><small>Pakaian dijaga dengan rapi</small></div></div><div class='feature-card'><div class='feature-icon'>◷</div><div><strong>Estimasi jelas</strong><small>Pantau status pesanan</small></div></div><div class='feature-card'><div class='feature-icon'>◇</div><div><strong>Pilihan praktis</strong><small>Layanan sesuai kebutuhan</small></div></div><div class='feature-card'><div class='feature-icon'>♡</div><div><strong>Mulai Rp7.000/kg</strong><small>Harga layanan reguler</small></div></div></div>")
             gr.HTML("<section id='buyer-services' class='section'><div class='section-heading'><div class='section-eyebrow'>LAYANAN KAMI</div><h2>Perawatan pas untuk pakaianmu</h2><p>Pilih layanan sesuai kebutuhan. Harga dan estimasi ditampilkan sebelum pesanan dikirim.</p></div>" + service_cards_markup() + "</section>")
@@ -435,7 +551,7 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
             with gr.Column(elem_id="buyer-order-form", elem_classes=["form-panel"]):
                 gr.Markdown("### Formulir pesanan\nJam buka setiap hari, 07.00–20.00.")
                 if not ADMIN_DB:
-                    gr.Markdown("Info: pemesanan online demo aktif setelah koneksi admin Supabase disiapkan di file .env lokal.")
+                    gr.Markdown(f"Info: {ADMIN_DB_CONFIG_ERROR or 'pemesanan online perlu koneksi admin Supabase di file .env lokal.'}")
                 with gr.Row():
                     with gr.Column():
                         buyer_name = gr.Textbox(label="Nama lengkap", placeholder="Nama kamu")
@@ -467,10 +583,9 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
             with gr.Column(elem_id="admin-login", visible=True) as admin_login_panel:
                 gr.Markdown("## Portal admin\nKelola pesanan Laundry Halilintar.")
                 if not ADMIN_DB:
-                    gr.Markdown("**Koneksi database belum diatur.** Isi SUPABASE_SERVICE_ROLE_KEY di .env lokal.")
-                if not ADMIN_PIN:
-                    gr.Markdown("Atur ADMIN_PIN pada .env lokal untuk membuat PIN admin.")
-                admin_pin_input = gr.Textbox(label="PIN admin", type="password", placeholder="Masukkan PIN")
+                    gr.Markdown(f"**Koneksi database belum siap.** {ADMIN_DB_CONFIG_ERROR or 'Isi SUPABASE_SECRET_KEY di .env lokal.'}")
+                admin_email_input = gr.Textbox(label="Email admin", placeholder="email-admin@example.com")
+                admin_password_input = gr.Textbox(label="Password akun admin", type="password", placeholder="Password akun Supabase")
                 admin_login_button = gr.Button("Masuk sebagai admin", variant="primary")
                 admin_login_message = gr.Markdown()
             with gr.Column(visible=False, elem_id="admin-workspace") as admin_workspace:
@@ -513,12 +628,26 @@ with gr.Blocks(title="Laundry Halilintar") as demo:
                 ])
 
     admin_outputs = [admin_login_message, admin_session, admin_login_panel, admin_workspace, total_card, active_card, ready_card, revenue_card, orders_table]
-    admin_login_button.click(login_admin, inputs=[admin_pin_input], outputs=admin_outputs)
+    admin_login_button.click(login_admin, inputs=[admin_email_input, admin_password_input], outputs=admin_outputs)
     admin_logout_button.click(logout_admin, outputs=admin_outputs)
     admin_refresh.click(refresh_dashboard_for_admin, inputs=[admin_session], outputs=[total_card, active_card, ready_card, revenue_card, orders_table])
     create_button.click(create_order, [customer_name, customer_phone, service_select, weight_input, payment_select, paid_select, notes_input, admin_session], [order_notice, total_card, active_card, ready_card, revenue_card, orders_table, service_select])
     update_button.click(update_order, [update_code, update_status_select, update_paid_select, update_payment_select, admin_session], [update_notice, total_card, active_card, ready_card, revenue_card, orders_table])
-    buyer_submit.click(create_buyer_order, [buyer_name, buyer_phone, buyer_service, buyer_weight, buyer_payment, buyer_notes], outputs=buyer_result)
+    buyer_submit.click(create_buyer_order, [buyer_name, buyer_phone, buyer_service, buyer_weight, buyer_payment, buyer_notes, buyer_session], outputs=buyer_result)
+    buyer_auth_sync.click(complete_buyer_login, inputs=[buyer_auth_token], outputs=[buyer_session, buyer_auth_status])
+    buyer_google_button.click(fn=None, js="""async () => {
+      const client = await window.__laundryAuthReady;
+      if (!client) { alert('Library login tidak dapat dimuat. Periksa koneksi internet.'); return; }
+      const {error} = await client.auth.signInWithOAuth({
+        provider: 'google', options: {redirectTo: window.location.origin}
+      });
+      if (error) alert('Login Google gagal: ' + error.message);
+    }""")
+    buyer_logout_button.click(fn=None, js="""async () => {
+      const client = await window.__laundryAuthReady;
+      if (client) await client.auth.signOut();
+      window.location.reload();
+    }""")
     track_button.click(track_buyer_order, [track_code, track_phone], outputs=track_result)
     buyer_chat_input.submit(ask_chat, [buyer_chat_input, buyer_chat], [buyer_chat, buyer_chat_input])
     buyer_chat_send.click(ask_chat, [buyer_chat_input, buyer_chat], [buyer_chat, buyer_chat_input])
