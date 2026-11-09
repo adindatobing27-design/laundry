@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+adapter-laundry/
+hasil-lora-laundry/
+models/
+
