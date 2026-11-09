@@ -161,8 +161,6 @@ def submit_message(message, history):
 
 with gr.Blocks(
     title="Asisten Laundry",
-    theme=gr.themes.Soft(primary_hue="green", secondary_hue="teal", neutral_hue="slate"),
-    css=CSS,
 ) as demo:
     with gr.Row(elem_id="topbar"):
         gr.HTML(
@@ -200,10 +198,8 @@ with gr.Blocks(
             )
             chat_log = gr.Chatbot(
                 value=[{"role": "assistant", "content": WELCOME}],
-                type="messages",
                 height=430,
                 show_label=False,
-                bubble_full_width=False,
                 elem_id="chat-log",
             )
             with gr.Row(elem_id="message-row"):
@@ -235,5 +231,8 @@ with gr.Blocks(
     clear_button.click(lambda: ([{"role": "assistant", "content": WELCOME}], ""), outputs=[chat_log, message_box])
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(
+        theme=gr.themes.Soft(primary_hue="green", secondary_hue="teal", neutral_hue="slate"),
+        css=CSS,
+    )
 
