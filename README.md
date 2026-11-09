@@ -4,8 +4,8 @@ Prototype ini menggabungkan pencatatan pesanan laundry di Supabase dengan chatbo
 
 ## Fitur
 
-- **Pembeli:** lihat katalog dan estimasi, buat pesanan, cek status memakai kode pesanan + nomor WhatsApp, dan tanya chatbot.
-- **Admin:** login PIN, lihat ringkasan, catat pesanan di kasir, dan perbarui status/pembayaran.
+- **Pembeli:** lihat katalog dan estimasi, buat pesanan, cek status memakai kode pesanan + nomor WhatsApp, dan tanya chatbot. Login Google belum diaktifkan.
+- **Admin:** masuk dengan email/password Supabase Auth yang emailnya diizinkan pada `ADMIN_EMAIL`, lihat ringkasan, catat pesanan di kasir, dan perbarui status/pembayaran.
 - Ringkasan total pesanan, pesanan aktif, siap diambil, dan nilai transaksi lunas.
 - Pencatatan pelanggan dan pesanan, nomor pesanan otomatis, catatan cucian, status pengerjaan, dan pembayaran.
 - Daftar layanan kiloan dan estimasi pengerjaan.
@@ -29,13 +29,22 @@ Isi `.env` lokal (jangan unggah file ini ke GitHub):
 ```env
 SUPABASE_URL=alamat-project
 SUPABASE_KEY=publishable-atau-anon-key
-SUPABASE_SERVICE_ROLE_KEY=service-role-key-hanya-untuk-backend-lokal
-ADMIN_PIN=buat-pin-admin-sendiri
+SUPABASE_SECRET_KEY=sb_secret_key-hanya-untuk-backend-lokal
+ADMIN_EMAIL=email-admin-yang-diizinkan
 MODEL_ID=Qwen/Qwen2.5-0.5B-Instruct
 ADAPTER_DIR=
 ```
 
-`SUPABASE_KEY` digunakan untuk membaca FAQ dan layanan publik. Agar pesanan pembeli, dashboard admin, dan perubahan status berfungsi, isi `SUPABASE_SERVICE_ROLE_KEY` dari Supabase Dashboard → Project Settings → API Keys → Legacy API Keys → `service_role`. Atur `ADMIN_PIN` dengan PIN pilihan sendiri. Simpan keduanya hanya di `.env` lokal. Jangan masukkan key tersebut ke kode, GitHub, chatbot, atau browser. Key admin dapat melewati RLS; prototype ini hanya dijalankan lokal dan tidak boleh dipublikasikan ke internet dengan key tersebut. Untuk aplikasi yang dihosting publik, ganti login PIN lokal dengan Supabase Auth dan kebijakan admin yang sesuai.
+`SUPABASE_KEY` adalah publishable key untuk membaca FAQ dan layanan serta melakukan login Supabase Auth. Agar pesanan tersimpan dan panel admin bisa membaca transaksi, isi `SUPABASE_SECRET_KEY` dari Supabase Dashboard → Project Settings → API Keys → Secret keys (`sb_secret_...`). Jika project lama belum memiliki secret key, key `service_role` lama dapat diisi pada `SUPABASE_SERVICE_ROLE_KEY`. Jangan masukkan key server ke kode, GitHub, chatbot, atau browser. Key server dapat melewati RLS; prototype ini dijalankan lokal saja dan tidak boleh dipublikasikan ke internet dengan key tersebut. Admin masuk memakai akun Supabase Auth dan emailnya harus cocok dengan `ADMIN_EMAIL`. Buat/reset password akun admin lewat Supabase Dashboard → Authentication → Users. Login Google pembeli memerlukan Google OAuth Client ID/Secret di Google Cloud Console dan provider Google yang diaktifkan pada Supabase Auth.
+
+### Menyiapkan login Google dan admin
+
+1. Di Google Cloud Console, buat **OAuth Client ID** dengan tipe **Web application**. Pada bagian **Authorized redirect URIs**, masukkan URL callback yang ditampilkan Supabase di Authentication → Sign In / Providers → Google. Untuk project ini biasanya bentuknya `https://rtdkbaamgqvxoygahthy.supabase.co/auth/v1/callback`.
+2. Salin Client ID dan Client Secret dari Google Cloud Console, lalu masukkan langsung ke kolom provider Google di Supabase Dashboard. Jangan taruh Client Secret di `.env` atau GitHub.
+3. Di Supabase Authentication → URL Configuration → Redirect URLs, izinkan `http://127.0.0.1:7860/**` dan `http://localhost:7860/**` untuk login lokal.
+4. Buat user admin di Supabase Dashboard → Authentication → Users. Gunakan email yang sama dengan `ADMIN_EMAIL`; set password di Dashboard. Aplikasi hanya menerima email admin yang sudah ditentukan itu.
+5. Ganti isi `SUPABASE_SECRET_KEY` di `.env` lokal dengan Secret key `sb_secret_...` dari Project Settings → API Keys. Jangan pernah menaruh publishable key di `SUPABASE_SECRET_KEY`.
+6. Mulai ulang aplikasi. Login Google membuat akun pembeli Supabase Auth saat mereka pertama kali masuk (jika pendaftaran user baru diizinkan). Pesanan baru ditautkan ke ID akun tersebut.
 
 ## Database
 
