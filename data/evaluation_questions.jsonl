@@ -4,4 +4,3 @@
 {"question":"Apakah sepatu bisa dicuci di sini?","expected_answer":"Informasi layanan cuci sepatu belum tersedia. Silakan tanyakan kepada admin laundry."}
 {"question":"Kalau saya butuh cepat, apakah layanan ekspres pasti tersedia?","expected_answer":"Layanan ekspres bergantung pada kapasitas laundry. Silakan konfirmasi kepada admin."}
 {"question":"Saya tidak menemukan bukti transaksi. Bagaimana mengambil cucian?","expected_answer":"Hubungi admin dan berikan nama atau nomor telepon yang digunakan saat transaksi agar pesanan dapat diperiksa."}
-

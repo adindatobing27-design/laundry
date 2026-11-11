@@ -99,4 +99,3 @@ insert into public.faqs (question, answer) values
 ('Apa metode pembayaran yang tersedia?', 'Pembayaran dapat dilakukan secara tunai, QRIS, atau transfer bank.'),
 ('Berapa lama laundry reguler selesai?', 'Estimasi layanan reguler adalah sekitar 3 hari sejak pakaian diterima.')
 on conflict (question) do update set answer = excluded.answer, is_active = true;
-
